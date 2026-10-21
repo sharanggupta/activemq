@@ -189,17 +189,20 @@ public class ActiveMQSessionExecutor implements Task {
     }
 
     /*
-     * A dispatch with a non zero delivery sequence id already passed its consumer's duplicate
-     * check before it was queued here again, for example when a MessageListener is set on a
-     * consumer that holds prefetched messages. The broker replays it after the transport
-     * interruption, so the connection audit must not flag that replay as a duplicate.
+     * A dispatch with a non zero delivery sequence id was handed to its consumer before it was
+     * queued here again, for example when a MessageListener is set on a consumer that holds
+     * prefetched messages, so the connection audit may already hold it. The broker replays it
+     * after the transport interruption, so roll the audit back, as the consumer does for its own
+     * prefetch buffer, or the replay is poison acked as a duplicate. Rolling back a message the
+     * audit does not hold does nothing. This runs on the transport thread, so it must not take
+     * the consumer's locks.
      */
     private void rollbackDuplicateCheck(MessageDispatch dropped) {
-        if (dropped.getMessage() == null || dropped.getDeliverySequenceId() == 0) {
+        if (dropped.getMessage() == null || dropped.getConsumerId() == null || dropped.getDeliverySequenceId() == 0) {
             return;
         }
         ActiveMQMessageConsumer consumer = findConsumer(dropped.getConsumerId());
-        if (consumer != null) {
+        if (consumer != null && !consumer.isBrowser()) {
             session.connection.rollbackDuplicate(consumer, dropped.getMessage());
         }
     }
