@@ -124,14 +124,20 @@ public class ActiveMQSessionExecutor implements Task {
     }
 
     void dispatch(MessageDispatch message) {
+        ActiveMQMessageConsumer consumer = findConsumer(message.getConsumerId());
+        if (consumer != null) {
+            consumer.dispatch(message);
+        }
+    }
+
+    private ActiveMQMessageConsumer findConsumer(ConsumerId consumerId) {
         // TODO - we should use a Map for this indexed by consumerId
         for (ActiveMQMessageConsumer consumer : this.session.consumers) {
-            ConsumerId consumerId = message.getConsumerId();
             if (consumerId.equals(consumer.getConsumerId())) {
-                consumer.dispatch(message);
-                break;
+                return consumer;
             }
         }
+        return null;
     }
 
     synchronized void start() {
@@ -177,7 +183,25 @@ public class ActiveMQSessionExecutor implements Task {
     }
 
     protected void clearMessagesInProgress() {
-        messageQueue.clear();
+        for (MessageDispatch dropped : messageQueue.removeAll()) {
+            rollbackDuplicateCheck(dropped);
+        }
+    }
+
+    /*
+     * A dispatch with a non zero delivery sequence id already passed its consumer's duplicate
+     * check before it was queued here again, for example when a MessageListener is set on a
+     * consumer that holds prefetched messages. The broker replays it after the transport
+     * interruption, so the connection audit must not flag that replay as a duplicate.
+     */
+    private void rollbackDuplicateCheck(MessageDispatch dropped) {
+        if (dropped.getMessage() == null || dropped.getDeliverySequenceId() == 0) {
+            return;
+        }
+        ActiveMQMessageConsumer consumer = findConsumer(dropped.getConsumerId());
+        if (consumer != null) {
+            session.connection.rollbackDuplicate(consumer, dropped.getMessage());
+        }
     }
 
     public boolean isEmpty() {

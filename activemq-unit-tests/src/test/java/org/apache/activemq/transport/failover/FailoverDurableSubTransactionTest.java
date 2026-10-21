@@ -17,6 +17,7 @@
 package org.apache.activemq.transport.failover;
 
 import org.apache.activemq.ActiveMQConnectionFactory;
+import org.apache.activemq.ActiveMQMessageConsumer;
 import org.apache.activemq.broker.*;
 import org.apache.activemq.broker.region.policy.PolicyEntry;
 import org.apache.activemq.broker.region.policy.PolicyMap;
@@ -45,7 +46,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(Parameterized.class)
-@Ignore("This test is going to be fixed in the PR: AMQ-9829 Track prefetched messages for duplicate suppression during failover")
 @Category(ParallelTest.class)
 public class FailoverDurableSubTransactionTest {
 
@@ -136,6 +136,8 @@ public class FailoverDurableSubTransactionTest {
 
 
     @org.junit.Test
+    @Ignore("Intermittent: a message dequeued by receive() while a transport interruption is processed is neither "
+            + "tracked as delivered nor removed from the connection audit, so its replay is poison acked to the DLQ")
     public void testFailoverCommit() throws Exception {
 
         final AtomicInteger dispatchedCount = new AtomicInteger(0);
@@ -323,6 +325,15 @@ public class FailoverDurableSubTransactionTest {
         connection.start();
         final Session receiveSession = connection.createSession(true, Session.SESSION_TRANSACTED);
         consumer = receiveSession.createDurableSubscriber(destination, "DS");
+        // Setting the listener moves the prefetched messages, already seen by the connection audit, to the
+        // session's dispatch queue. Prefetch all of them first, so the failover always has to replay such messages.
+        final ActiveMQMessageConsumer prefetchingConsumer = (ActiveMQMessageConsumer) consumer;
+        assertTrue("all messages prefetched before the listener is set", Wait.waitFor(new Wait.Condition() {
+            @Override
+            public boolean isSatisified() throws Exception {
+                return prefetchingConsumer.getMessageSize() == messageCount * 2;
+            }
+        }));
 
         final AtomicBoolean success = new AtomicBoolean(false);
         final HashSet<Integer> dupCheck = new HashSet<Integer>();
